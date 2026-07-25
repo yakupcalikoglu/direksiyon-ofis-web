@@ -197,6 +197,39 @@ async function signUp(email, password, adSoyad){
 function signOut(){ session=null; profile=null; currentUser_reset(); }
 function currentUser_reset(){ currentTab='kasa'; render(); }
 
+// ---------- şifremi unuttum / şifre sıfırlama ----------
+async function sendPasswordReset(email){
+  const redirectTo = window.location.origin + window.location.pathname;
+  await sbFetch(`/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`, {
+    method:'POST', body: JSON.stringify({email})
+  });
+}
+let recoverySession = null; // sıfırlama linkiyle gelen geçici oturum
+async function setNewPassword(newPassword){
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method:'PUT',
+    headers:{
+      'Content-Type':'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${recoverySession.access_token}`
+    },
+    body: JSON.stringify({password:newPassword})
+  });
+  const data = await res.json();
+  if(!res.ok){ throw new Error((data && (data.message||data.msg||data.error_description)) || res.statusText); }
+  return data;
+}
+function checkRecoveryLink(){
+  // Supabase, sıfırlama linkinden dönünce token'ları URL'in hash kısmına (#...) koyar
+  const hash = window.location.hash;
+  if(!hash || hash.indexOf('access_token')===-1) return;
+  const params = new URLSearchParams(hash.slice(1));
+  if(params.get('type')!=='recovery') return;
+  recoverySession = { access_token: params.get('access_token'), refresh_token: params.get('refresh_token') };
+  authMode = 'reset';
+  history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+
 // ---------- utils ----------
 const todayStr = () => new Date().toISOString().slice(0,10);
 const fmtMoney = n => (Number(n)||0).toLocaleString('tr-TR',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₺';
@@ -333,6 +366,25 @@ function renderAuth(){
       <div class="muted-note">Kayıt olduktan sonra yönetici size yetki tanımlayana kadar sınırlı erişiminiz olur.</div>
       <button class="link-btn" style="margin-top:12px;" data-action="auth-mode" data-val="signin">← Giriş ekranına dön</button>
     </div></div>`;
+  if(authMode==='forgot') return `
+    <div class="login-wrap"><div class="login-box">
+      <h1>Direksiyon Ofis</h1><p class="muted-note">Şifremi Unuttum</p>
+      <form data-action="do-forgot">
+        <label>E-posta</label><input name="email" type="email" required autofocus>
+        <div class="btn-row"><button class="btn-amber" type="submit">Sıfırlama Linki Gönder</button></div>
+      </form>
+      <div class="muted-note">Kayıtlı e-posta adresine, yeni şifre belirlemen için bir bağlantı gönderilecek.</div>
+      <button class="link-btn" style="margin-top:12px;" data-action="auth-mode" data-val="signin">← Giriş ekranına dön</button>
+    </div></div>`;
+  if(authMode==='reset') return `
+    <div class="login-wrap"><div class="login-box">
+      <h1>Direksiyon Ofis</h1><p class="muted-note">Yeni Şifre Belirle</p>
+      <form data-action="do-reset">
+        <label>Yeni Şifre (en az 6 karakter)</label><input name="password" type="password" minlength="6" required autofocus>
+        <label>Yeni Şifre (tekrar)</label><input name="password2" type="password" minlength="6" required>
+        <div class="btn-row"><button class="btn-amber" type="submit">Şifreyi Güncelle</button></div>
+      </form>
+    </div></div>`;
   return `
     <div class="login-wrap"><div class="login-box">
       <h1>Direksiyon Ofis</h1><p class="muted-note">Giriş Yap</p>
@@ -341,7 +393,8 @@ function renderAuth(){
         <label>Şifre</label><input name="password" type="password" required>
         <div class="btn-row"><button class="btn-amber" type="submit">Giriş Yap</button></div>
       </form>
-      <button class="link-btn" style="margin-top:12px;" data-action="auth-mode" data-val="signup">Hesabım yok, kayıt ol (eğitici)</button>
+      <button class="link-btn" style="margin-top:10px;display:block;" data-action="auth-mode" data-val="forgot">Şifremi unuttum</button>
+      <button class="link-btn" style="margin-top:8px;" data-action="auth-mode" data-val="signup">Hesabım yok, kayıt ol (eğitici)</button>
     </div></div>`;
 }
 
@@ -1034,6 +1087,19 @@ document.addEventListener('submit', async (e)=>{
       alert('Kayıt başarılı! Şimdi giriş yapabilirsiniz. Yönetici size yetki tanımlayana kadar erişiminiz sınırlı olacak.');
       authMode='signin'; render();
     }
+    else if(action==='do-forgot'){
+      await sendPasswordReset(fd.get('email'));
+      alert('E-posta adresine bir sıfırlama linki gönderildi. Gelen kutunu (ve spam klasörünü) kontrol et.');
+      authMode='signin'; render();
+    }
+    else if(action==='do-reset'){
+      const p1=fd.get('password'), p2=fd.get('password2');
+      if(p1!==p2){ alert('Şifreler birbiriyle eşleşmiyor.'); return; }
+      await setNewPassword(p1);
+      recoverySession=null;
+      alert('Şifren güncellendi. Şimdi yeni şifrenle giriş yapabilirsin.');
+      authMode='signin'; render();
+    }
     else if(action==='edit-transaction'){
       const id = form.dataset.id;
       const t = state.transactions.find(x=>x.id===id);
@@ -1140,6 +1206,7 @@ document.addEventListener('submit', async (e)=>{
   } catch(err){ alert('Hata: '+err.message); }
 });
 
+checkRecoveryLink();
 render();
 </script>
 </body>
