@@ -113,6 +113,9 @@
     .nav-item{flex-direction:column;justify-content:center;align-items:center;padding:8px 14px 7px 14px;font-size:10px;gap:2px;white-space:nowrap;flex-shrink:0;}
     .nav-item.active::before{top:auto;bottom:0;left:0;right:0;width:auto;height:3px;}
     .main{padding:16px 14px 84px 14px;max-width:100%;}
+    #global-search-wrap{padding:12px 14px 0 14px !important;}
+    #global-search-wrap #global-search-input{max-width:100% !important;}
+    #global-search-results{left:14px !important;width:calc(100% - 28px) !important;}
     .grid2{grid-template-columns:1fr;} .cards{grid-template-columns:repeat(2,1fr);}
     table{font-size:12px;} .modal{width:94vw;padding:18px 16px;}
     .msg-wrap{flex-direction:column;height:auto;} .msg-people{width:100%;max-height:140px;} .msg-thread{height:45vh;}
@@ -271,6 +274,33 @@ function canTab(tabId){
 }
 function visibleTabs(){ return TABS.filter(t=>canTab(t.id)); }
 
+// ---------- genel arama ----------
+function textMatches(field, q){ return (field||'').toString().toLowerCase().includes(q); }
+function globalSearchResults(q){
+  q = (q||'').trim().toLowerCase();
+  if(q.length<2) return [];
+  const out = [];
+  (state.students||[]).forEach(s=>{ if(textMatches(s.ad_soyad,q)||textMatches(s.telefon,q)) out.push({kind:'student', id:s.id, icon:'🎓', label:s.ad_soyad, sub:'Öğrenci'}); });
+  (state.vehicles||[]).forEach(v=>{ if(textMatches(v.plaka,q)||textMatches(v.marka,q)||textMatches(v.model,q)) out.push({kind:'vehicle', id:v.id, icon:'🚗', label:v.plaka, sub:[v.marka,v.model].filter(Boolean).join(' ')||'Araç'}); });
+  (state.schedules||[]).forEach(sc=>{ if(textMatches(sc.baslik,q)) out.push({kind:'schedule', id:sc.id, icon:'🗓️', label:sc.baslik, sub:'Ders Programı'}); });
+  if(profile && profile.role==='admin') (state.instructors||[]).forEach(i=>{ if(textMatches(i.ad_soyad,q)) out.push({kind:'instructor', id:i.id, icon:'🧑‍🏫', label:i.ad_soyad, sub:i.role==='admin'?'Yönetici':'Eğitici'}); });
+  return out.slice(0,8);
+}
+function renderGlobalSearchResults(){
+  const box = document.getElementById('global-search-results'); if(!box) return;
+  const q = window.__globalSearchQuery||'';
+  const results = globalSearchResults(q);
+  if(q.trim().length<2 || !results.length){
+    box.style.display = q.trim().length>=2 ? 'block' : 'none';
+    box.innerHTML = q.trim().length>=2 ? `<div style="padding:10px 12px;font-size:12px;color:var(--muted);">Sonuç bulunamadı.</div>` : '';
+    return;
+  }
+  box.style.display = 'block';
+  box.innerHTML = results.map(r=>`<div data-action="global-search-goto" data-kind="${r.kind}" data-id="${r.id}" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;display:flex;gap:8px;align-items:center;">
+    <span>${r.icon}</span><div><div style="font-weight:600;">${esc(r.label)}</div><div style="font-size:11px;color:var(--muted);">${esc(r.sub)}</div></div>
+  </div>`).join('');
+}
+
 // ---------- data loading per tab ----------
 async function loadTabData(tabId){
   if(tabId==='kasa'){
@@ -330,14 +360,25 @@ function render(){
     </div>
     <div class="sidebar">
       <div class="brand"><h1>Direksiyon Ofis</h1><span>ön muhasebe &amp; takip</span></div>
-      <div>${tabs.map(t=>`<div class="nav-item ${currentTab===t.id?'active':''}" data-tab="${t.id}"><span class="nav-emoji">${t.icon}</span>${t.label}</div>`).join('')}</div>
+      <div>${tabs.map(t=>{
+        const badge = t.id==='araclar' ? activeWarnings().length : 0;
+        return `<div class="nav-item ${currentTab===t.id?'active':''}" data-tab="${t.id}"><span class="nav-emoji">${t.icon}</span>${t.label}${badge>0?`<span id="araclar-badge" style="background:var(--red);color:#fff;border-radius:20px;font-size:10px;font-weight:700;padding:1px 6px;margin-left:auto;">${badge}</span>`:''}</div>`;
+      }).join('')}</div>
       <div class="sidebar-foot">
         <div style="color:rgba(255,255,255,.6);margin-bottom:8px;">👤 ${esc(who)}</div>
         <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.25);" data-action="logout">Çıkış Yap</button>
       </div>
     </div>
-    <div class="main" id="main"><div class="loading">Yükleniyor...</div></div>
+    <div class="content-col" style="flex:1;display:flex;flex-direction:column;min-width:0;">
+      <div id="global-search-wrap" style="padding:16px 34px 0 34px;position:relative;">
+        <input id="global-search-input" type="text" autocomplete="off" placeholder="🔍 Ara: öğrenci, araç, plaka, program, eğitici..." value="${esc(window.__globalSearchQuery||'')}" style="max-width:360px;">
+        <div id="global-search-results" style="display:none;position:absolute;top:100%;left:34px;width:360px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.14);z-index:60;max-height:320px;overflow:auto;"></div>
+      </div>
+      <div class="main" id="main"><div class="loading">Yükleniyor...</div></div>
+    </div>
   `;
+  renderToastContainer();
+  renderGlobalSearchResults();
   loadTabData(currentTab).then(()=>{
     const main = document.getElementById('main');
     if(currentTab==='kasa') main.innerHTML = renderKasa();
@@ -404,17 +445,57 @@ function insuranceWarnings(){
   state.vehicles.forEach(v=>{
     const d = daysUntil(v.sigorta_bitis);
     if(d!==null){
-      if(d<0) warns.push({level:'red', text:`${v.plaka} plakalı aracın sigortası ${fmtDate(v.sigorta_bitis)} tarihinde doldu.`});
-      else if(d<=7) warns.push({level:'amber', text:`${v.plaka} plakalı aracın sigortası ${d===0?'bugün doluyor':d+' gün sonra doluyor'} (${fmtDate(v.sigorta_bitis)}).`});
+      if(d<0) warns.push({key:`${v.id}|sigorta|${v.sigorta_bitis}`, vehicleId:v.id, level:'red', text:`${v.plaka} plakalı aracın sigortası ${fmtDate(v.sigorta_bitis)} tarihinde doldu.`});
+      else if(d<=7) warns.push({key:`${v.id}|sigorta|${v.sigorta_bitis}`, vehicleId:v.id, level:'amber', text:`${v.plaka} plakalı aracın sigortası ${d===0?'bugün doluyor':d+' gün sonra doluyor'} (${fmtDate(v.sigorta_bitis)}).`});
     }
     const dm = daysUntil(v.muayene_bitis);
     if(dm!==null){
-      if(dm<0) warns.push({level:'red', text:`${v.plaka} plakalı aracın muayenesi ${fmtDate(v.muayene_bitis)} tarihinde doldu.`});
-      else if(dm<=7) warns.push({level:'amber', text:`${v.plaka} plakalı aracın muayenesi ${dm===0?'bugün doluyor':dm+' gün sonra doluyor'} (${fmtDate(v.muayene_bitis)}).`});
+      if(dm<0) warns.push({key:`${v.id}|muayene|${v.muayene_bitis}`, vehicleId:v.id, level:'red', text:`${v.plaka} plakalı aracın muayenesi ${fmtDate(v.muayene_bitis)} tarihinde doldu.`});
+      else if(dm<=7) warns.push({key:`${v.id}|muayene|${v.muayene_bitis}`, vehicleId:v.id, level:'amber', text:`${v.plaka} plakalı aracın muayenesi ${dm===0?'bugün doluyor':dm+' gün sonra doluyor'} (${fmtDate(v.muayene_bitis)}).`});
     }
   });
   return warns;
 }
+let dismissedWarningKeys = new Set();
+try{ dismissedWarningKeys = new Set(JSON.parse(localStorage.getItem('dismissedWarnings')||'[]')); }catch(e){}
+let __lastToastSoundCount = 0;
+function activeWarnings(){ return insuranceWarnings().filter(w=>!dismissedWarningKeys.has(w.key)); }
+function dismissWarning(key){
+  dismissedWarningKeys.add(key);
+  try{ localStorage.setItem('dismissedWarnings', JSON.stringify([...dismissedWarningKeys])); }catch(e){}
+  render();
+}
+function playAlertBeep(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.type='sine'; o.frequency.value=880;
+    g.gain.setValueAtTime(0.001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.35);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime+0.36);
+  }catch(e){}
+}
+function renderToastContainer(){
+  let el = document.getElementById('toast-container');
+  const warns = activeWarnings();
+  if(!el){
+    el = document.createElement('div'); el.id='toast-container';
+    el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:80;display:flex;flex-direction:column;gap:8px;max-width:340px;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = warns.map(w=>`
+    <div class="toast-item ${w.level}" style="background:${w.level==='red'?'#FBEAE8':'#FFF4E0'};border:1px solid ${w.level==='red'?'#C0453A':'#D68F1E'};color:${w.level==='red'?'#8C332A':'#7A5209'};border-radius:10px;padding:10px 12px;font-size:12.5px;box-shadow:0 4px 14px rgba(0,0,0,.15);display:flex;gap:8px;align-items:flex-start;">
+      <span>⚠️</span>
+      <div style="flex:1;line-height:1.4;">${esc(w.text)}</div>
+      <span data-action="dismiss-warning" data-key="${esc(w.key)}" style="cursor:pointer;font-weight:700;opacity:.7;flex-shrink:0;">✕</span>
+    </div>
+  `).join('');
+  if(warns.length > __lastToastSoundCount) playAlertBeep();
+  __lastToastSoundCount = warns.length;
+}
+
 function renderKasa(){
   const today = todayStr();
   const todays = state.transactions.filter(t=>t.tarih===today);
@@ -431,14 +512,12 @@ function renderKasa(){
   const tGelir=tNakit+tKart+tHesap;
   const tGider=sum(state.transactions,t=>t.tur==='gider');
   const tNet=tGelir-tGider;
-  const warns = insuranceWarnings();
   const rows = [...state.transactions].slice(0,80);
   const studentName = id => { const s=state.students.find(x=>x.id===id); return s? s.ad_soyad : ''; };
 
   return `
     <div class="page-head"><h2>Kasa</h2><span class="mono" style="color:var(--muted)">${fmtDate(today)}</span></div>
     <div class="roadline"></div>
-    ${warns.map(w=>`<div class="warn-banner ${w.level}">⚠️<div><b>Sigorta / Muayene Uyarısı</b>${esc(w.text)}</div></div>`).join('')}
     <h3 style="margin-bottom:10px;">Bugün</h3>
     <div class="cards">
       <div class="card clickable" data-action="quick-income" data-yontem="Nakit"><div class="label">Nakit</div><div class="value">${fmtMoney(nakit)}</div></div>
@@ -781,7 +860,7 @@ function modalHtml(){
   if(modal.type==='edit-transaction'){
     const t = state.transactions.find(x=>x.id===modal.id); if(!t) return '';
     const studentName = id => { const s=state.students.find(x=>x.id===id); return s? s.ad_soyad : ''; };
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span>
       <h3>Hareketi Düzenle</h3>
       <div class="muted-note">Tür: <span class="tag ${t.tur}">${t.tur==='gelir'?'Gelir':'Gider'}</span> ${t.ogrenci_id?'· Öğrenci: '+esc(studentName(t.ogrenci_id)):''}</div>
@@ -809,7 +888,7 @@ function modalHtml(){
   }
   if(modal.type==='quick-income'){
     const method = modal.yontem || 'Nakit';
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span>
       <h3>Hızlı Tahsilat — ${esc(method)}</h3>
       <div class="muted-note">Bu kayıt doğrudan Kasa'ya işlenir.</div>
@@ -830,7 +909,7 @@ function modalHtml(){
     </div></div>`;
   }
   if(modal.type==='add-student') return `
-    <div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>Yeni Öğrenci</h3>
       <form data-action="add-student">
         <label>Ad Soyad</label><input name="adSoyad" required>
@@ -847,7 +926,7 @@ function modalHtml(){
     const s = state.students.find(x=>x.id===modal.id); if(!s) return '';
     const paid = studentPaid(s.id); const remaining = Number(s.ucret||0)-paid;
     const payments = state.transactions.filter(t=>t.tur==='gelir'&&t.ogrenci_id===s.id).sort((a,b)=>b.tarih.localeCompare(a.tarih));
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>${esc(s.ad_soyad)}</h3>
       <div class="muted-note">${esc(s.telefon)||'telefon yok'} · Sınıf: ${esc(s.ehliyet_sinifi)||'-'} · Kayıt: ${fmtDate(s.kayit_tarihi)}</div>
       <div class="cards" style="margin:14px 0;">
@@ -870,7 +949,7 @@ function modalHtml(){
     </div></div>`;
   }
   if(modal.type==='add-vehicle') return `
-    <div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>Yeni Araç</h3>
       <form data-action="add-vehicle">
         <div class="row"><div><label>Plaka</label><input name="plaka" required></div><div><label>Marka</label><input name="marka"></div></div>
@@ -882,9 +961,16 @@ function modalHtml(){
   if(modal.type==='vehicle-detail'){
     const v = state.vehicles.find(x=>x.id===modal.id); if(!v) return '';
     const recs = state.vehicleRecords.filter(r=>r.vehicle_id===v.id).sort((a,b)=>b.tarih.localeCompare(a.tarih));
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3 class="mono">${esc(v.plaka)}</h3>
       <div class="muted-note">${esc(v.marka)} ${esc(v.model)} · Sigorta: ${fmtDate(v.sigorta_bitis)} · Muayene: ${fmtDate(v.muayene_bitis)}</div>
+      <h3 style="font-size:14px;margin-top:14px;">Sigorta / Muayene Yenile</h3>
+      <div class="muted-note" style="margin-top:0;">Sigorta veya muayeneyi yeniledikten sonra yeni bitiş tarihini buraya gir — uyarı otomatik olarak güncellenir.</div>
+      <form data-action="renew-vehicle-dates" data-vid="${v.id}">
+        <div class="row"><div><label>Yeni Sigorta Bitiş Tarihi</label><input type="date" name="sigortaBitis" value="${v.sigorta_bitis||''}"></div>
+        <div><label>Yeni Muayene Bitiş Tarihi</label><input type="date" name="muayeneBitis" value="${v.muayene_bitis||''}"></div></div>
+        <div class="btn-row"><button class="btn-navy" type="submit">Tarihleri Güncelle</button></div>
+      </form>
       <h3 style="font-size:14px;margin-top:14px;">Bakım / Tamir Kaydı Ekle</h3>
       <form data-action="add-vehicle-record" data-vid="${v.id}">
         <div class="row"><div><label>Tarih</label><input type="date" name="tarih" value="${todayStr()}"></div>
@@ -904,7 +990,7 @@ function modalHtml(){
     const sc = state.schedules.find(x=>x.id===modal.id); if(!sc) return '';
     const student = state.students.find(x=>x.id===sc.ogrenci_id);
     const lessons = state.lessons.filter(l=>l.schedule_id===sc.id).sort((a,b)=>a.tarih.localeCompare(b.tarih)||(a.saat||'').localeCompare(b.saat||''));
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" id="schedule-modal-el" style="width:560px;" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" id="schedule-modal-el" style="width:560px;">
       <span class="close-x" data-action="close-modal">✕</span><h3>${esc(sc.baslik)}</h3>
       <div class="muted-note">Öğrenci: ${esc(student?student.ad_soyad:'-')} · ${sc.periyot==='haftalik'?'Haftalık':'Aylık'} program</div>
       <h3 style="font-size:14px;margin-top:14px;">Ders Ekle</h3>
@@ -928,11 +1014,17 @@ function modalHtml(){
   if(modal.type==='instructor-detail'){
     const i = state.instructors.find(x=>x.id===modal.id); if(!i) return '';
     const iz = izinlerOf(i);
-    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal" onclick="event.stopPropagation()">
+    return `<div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>${esc(i.ad_soyad)}</h3>
       <form data-action="edit-instructor" data-id="${i.id}">
         <label>Ad Soyad</label><input name="adSoyad" value="${esc(i.ad_soyad)}" required>
         <label>Telefon</label><input name="telefon" value="${esc(i.telefon)||''}">
+        <label>Rol</label>
+        <select name="rol">
+          <option value="egitici" ${i.role==='egitici'?'selected':''}>Eğitici</option>
+          <option value="admin" ${i.role==='admin'?'selected':''}>Yönetici</option>
+        </select>
+        <div class="muted-note" style="margin-top:4px;">"Yönetici" yaparsan bu kişi tüm verilere ve ayarlara tam erişim kazanır.</div>
         <label class="chip" style="width:fit-content;"><input type="checkbox" name="aktif" ${i.aktif!==false?'checked':''} style="width:auto;"> Hesap aktif</label>
         <h3 style="font-size:13px;margin-top:16px;">Yetkiler</h3>
         <label class="chip" style="width:fit-content;"><input type="checkbox" name="kasaErisim" ${iz.kasaErisim?'checked':''} style="width:auto;"> Kasa'yı görebilsin</label>
@@ -979,12 +1071,25 @@ function exportSchedulePdf(scheduleId){
 
 // ================= EVENT DELEGATION =================
 document.addEventListener('click', async (e)=>{
+  const searchWrap = document.getElementById('global-search-wrap');
+  const resultsBox = document.getElementById('global-search-results');
+  if(resultsBox && resultsBox.style.display!=='none' && searchWrap && !searchWrap.contains(e.target)){ resultsBox.style.display='none'; }
   const navItem = e.target.closest('.nav-item[data-tab]');
   if(navItem){ await goToTab(navItem.dataset.tab); return; }
   const t = e.target.closest('[data-action]'); if(!t) return;
   const action = t.dataset.action;
-  if(action==='close-modal' || action==='close-modal-bg'){ modal=null; render(); return; }
-  if(t.tagName==='DIV' && action==='close-modal-bg' && e.target!==t) return;
+  if(action==='close-modal'){ modal=null; render(); return; }
+  if(action==='close-modal-bg'){ if(e.target===t){ modal=null; render(); } return; }
+  if(action==='dismiss-warning'){ dismissWarning(t.dataset.key); return; }
+  if(action==='global-search-goto'){
+    const kind=t.dataset.kind, id=t.dataset.id;
+    window.__globalSearchQuery='';
+    if(kind==='student'){ await goToTab('ogrenciler'); modal={type:'student-detail', id}; render(); }
+    else if(kind==='vehicle'){ await goToTab('araclar'); modal={type:'vehicle-detail', id}; render(); }
+    else if(kind==='schedule'){ await goToTab('program'); modal={type:'schedule-detail', id}; render(); }
+    else if(kind==='instructor'){ await goToTab('egiticiler'); modal={type:'instructor-detail', id}; render(); }
+    return;
+  }
   try{
     switch(action){
       case 'auth-mode': authMode=t.dataset.val; render(); break;
@@ -1058,6 +1163,7 @@ document.addEventListener('change', (e)=>{
   }
 });
 document.addEventListener('input', (e)=>{
+  if(e.target.id==='global-search-input'){ window.__globalSearchQuery = e.target.value; renderGlobalSearchResults(); return; }
   if(e.target.classList && e.target.classList.contains('money-input')) formatMoneyLive(e.target);
   if(e.target.name==='mesaj') window.__smsDraft = e.target.value;
   if(e.target.dataset.role==='report-filter' && e.target.type==='text'){
@@ -1065,7 +1171,10 @@ document.addEventListener('input', (e)=>{
     setTimeout(()=>{ const inp=document.querySelector('input[data-field="q"]'); if(inp){ inp.focus(); inp.selectionStart=inp.selectionEnd=inp.value.length; } },0);
   }
 });
-document.addEventListener('focus', (e)=>{ if(e.target.classList && e.target.classList.contains('money-input')) e.target.select(); }, true);
+document.addEventListener('focus', (e)=>{
+  if(e.target.id==='global-search-input') renderGlobalSearchResults();
+  if(e.target.classList && e.target.classList.contains('money-input')) e.target.select();
+}, true);
 document.addEventListener('keydown', (e)=>{
   if(e.key==='Enter' && !e.shiftKey && e.target.closest && e.target.closest('form[data-action="send-message"]')){ e.preventDefault(); e.target.closest('form').requestSubmit(); }
 });
@@ -1080,6 +1189,10 @@ document.addEventListener('submit', async (e)=>{
       profile = profs && profs[0];
       if(!profile){ alert('Profil bulunamadı, lütfen tekrar deneyin.'); session=null; render(); return; }
       currentTab = profile.role==='admin' ? 'kasa' : 'program';
+      try{ state.vehicles = await fetchTable('vehicles','order=plaka.asc'); }catch(e){}
+      try{ state.students = await fetchTable('students','order=ad_soyad.asc'); }catch(e){}
+      try{ state.schedules = await fetchTable('schedules'); }catch(e){}
+      try{ if(profile.role==='admin') state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc'); }catch(e){}
       render(); startMessagePolling();
     }
     else if(action==='do-signup'){
@@ -1139,6 +1252,11 @@ document.addEventListener('submit', async (e)=>{
       await insertRow('vehicles', {plaka:fd.get('plaka'), marka:fd.get('marka'), model:fd.get('model'), sigorta_bitis:fd.get('sigortaBitis')||null, muayene_bitis:fd.get('muayeneBitis')||null});
       modal=null; await goToTab('araclar');
     }
+    else if(action==='renew-vehicle-dates'){
+      const vid = form.dataset.vid;
+      await updateRow('vehicles', {id:vid}, {sigorta_bitis:fd.get('sigortaBitis')||null, muayene_bitis:fd.get('muayeneBitis')||null});
+      await loadTabData('araclar'); render(); modal={type:'vehicle-detail', id:vid}; render();
+    }
     else if(action==='add-vehicle-record'){
       const vid = form.dataset.vid;
       const rec = {vehicle_id:vid, tarih:fd.get('tarih'), tip:fd.get('tip'), aciklama:fd.get('aciklama'), tutar:moneyValue(fd.get('tutar'))};
@@ -1171,14 +1289,16 @@ document.addEventListener('submit', async (e)=>{
     else if(action==='edit-instructor'){
       const id = form.dataset.id;
       await updateRow('profiles', {id}, {
-        ad_soyad: fd.get('adSoyad'), telefon: fd.get('telefon'), aktif: !!fd.get('aktif'),
+        ad_soyad: fd.get('adSoyad'), telefon: fd.get('telefon'), aktif: !!fd.get('aktif'), role: fd.get('rol'),
         izinler: {
           kasaErisim: !!fd.get('kasaErisim'), araclarErisim: !!fd.get('araclarErisim'),
           raporlarErisim: !!fd.get('raporlarErisim'), smsErisim: !!fd.get('smsErisim'),
           ayarlarErisim: !!fd.get('ayarlarErisim'), ogrencilerErisim: fd.get('ogrencilerErisim')
         }
       });
-      modal=null; await goToTab('egiticiler');
+      modal=null;
+      if(fd.get('rol')==='admin') alert(`${fd.get('adSoyad')} artık Yönetici oldu.`);
+      await goToTab('egiticiler');
     }
     else if(action==='save-netgsm'){
       const patch = {netgsm_user:fd.get('netgsm_user'), netgsm_pass:fd.get('netgsm_pass'), netgsm_header:fd.get('netgsm_header')};
