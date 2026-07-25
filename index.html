@@ -816,15 +816,16 @@ function startMessagePolling(){
 // ================= EĞİTİCİLER =================
 function renderInstructors(){
   return `
-    <div class="page-head"><h2>Eğiticiler</h2></div>
+    <div class="page-head"><h2>Eğiticiler</h2><button class="btn-amber" data-action="open-add-instructor">+ Yeni Eğitici Ekle</button></div>
     <div class="roadline"></div>
-    <div class="muted-note" style="margin-bottom:14px;">Eğiticiler "Kayıt Ol" ekranından kendi hesaplarını oluşturur. Burada onların yetkilerini düzenleyebilirsiniz.</div>
+    <div class="muted-note" style="margin-bottom:14px;">Eğiticiler kendileri "Kayıt Ol" ekranından da hesap açabilir, ya da burada doğrudan siz ekleyebilirsiniz.</div>
     <div class="panel">
       ${state.instructors.length? `<table><thead><tr><th>Ad Soyad</th><th>Telefon</th><th>Durum</th><th>Öğrenci Erişimi</th><th></th></tr></thead><tbody>
         ${state.instructors.map(i=>{const iz=izinlerOf(i); return `<tr><td>${esc(i.ad_soyad)}</td><td class="mono">${esc(i.telefon)||'-'}</td>
         <td>${i.aktif!==false?'<span class="tag gelir">Aktif</span>':'<span class="tag gider">Pasif</span>'}</td>
         <td>${iz.ogrencilerErisim==='hepsi'?'Tüm Öğrenciler':iz.ogrencilerErisim==='yok'?'Erişemez':'Sadece Kendi Öğrencileri'}</td>
-        <td><button class="btn-ghost btn-sm" data-action="open-instructor-detail" data-id="${i.id}">Düzenle</button></td></tr>`;}).join('')}
+        <td style="white-space:nowrap;"><button class="btn-ghost btn-sm" data-action="open-instructor-detail" data-id="${i.id}">Düzenle</button>
+        <button class="btn-ghost btn-sm" data-action="del-instructor" data-id="${i.id}">Sil</button></td></tr>`;}).join('')}
       </tbody></table>` : `<div class="empty">Henüz kayıt olmuş eğitici yok.</div>`}
     </div>
   `;
@@ -1011,6 +1012,17 @@ function modalHtml(){
       </div>
     </div></div>`;
   }
+  if(modal.type==='add-instructor') return `
+    <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
+      <span class="close-x" data-action="close-modal">✕</span><h3>Yeni Eğitici Ekle</h3>
+      <div class="muted-note">Girdiğin e-postaya, hesabını onaylaması için bir bağlantı gidebilir (Supabase ayarına bağlı). Eğitici ilk girişte bu şifreyi kullanır, dilerse sonra "Şifremi Unuttum" ile değiştirebilir.</div>
+      <form data-action="add-instructor-admin">
+        <label>Ad Soyad</label><input name="adSoyad" required>
+        <label>E-posta</label><input name="email" type="email" required>
+        <label>Geçici Şifre (en az 6 karakter)</label><input name="password" type="password" minlength="6" required>
+        <div class="btn-row"><button class="btn-amber" type="submit">Ekle</button></div>
+      </form>
+    </div></div>`;
   if(modal.type==='instructor-detail'){
     const i = state.instructors.find(x=>x.id===modal.id); if(!i) return '';
     const iz = izinlerOf(i);
@@ -1134,6 +1146,10 @@ document.addEventListener('click', async (e)=>{
         window.__activeConvo = t.dataset.type==='genel' ? {type:'genel'} : {type:'dm', withId:t.dataset.wid};
         render(); break;
       case 'open-instructor-detail': modal={type:'instructor-detail', id:t.dataset.id}; render(); break;
+      case 'open-add-instructor': modal={type:'add-instructor'}; render(); break;
+      case 'del-instructor':
+        if(confirm('Bu eğiticiyi silmek istediğinize emin misiniz? Bu, hesabın uygulamaya erişimini tamamen kaldırır.')){ await deleteRow('profiles',{id:t.dataset.id}); await goToTab('egiticiler'); }
+        break;
       case 'del-bank': await deleteRow('bank_accounts',{id:t.dataset.id}); await goToTab('ayarlar'); break;
       case 'del-category': await deleteRow('custom_categories',{id:t.dataset.id}); await goToTab('ayarlar'); break;
     }
@@ -1285,6 +1301,12 @@ document.addEventListener('submit', async (e)=>{
       await insertRow('messages', {kanal: convo.type==='genel'?'genel':'ozel', gonderen_id:profile.id, alici_id: convo.type==='dm'? convo.withId : null, mesaj:text});
       state.messages = await fetchTable('messages','order=created_at.asc&limit=500');
       render();
+    }
+    else if(action==='add-instructor-admin'){
+      await signUp(fd.get('email'), fd.get('password'), fd.get('adSoyad'));
+      modal=null;
+      alert('Eğitici eklendi. Girdiğin e-posta/şifre ile giriş yapabilir.');
+      await goToTab('egiticiler');
     }
     else if(action==='edit-instructor'){
       const id = form.dataset.id;
