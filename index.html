@@ -195,7 +195,14 @@ async function signIn(email, password){
   session = data;
 }
 async function signUp(email, password, adSoyad){
-  await sbFetch('/auth/v1/signup', {method:'POST', body:JSON.stringify({email,password,data:{ad_soyad:adSoyad}})});
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    body: JSON.stringify({email,password,data:{ad_soyad:adSoyad}})
+  });
+  const data = await res.json();
+  if(!res.ok){ throw new Error((data && (data.message||data.msg||data.error_description)) || res.statusText); }
+  return data;
 }
 function signOut(){ session=null; profile=null; currentUser_reset(); }
 function currentUser_reset(){ currentTab='kasa'; render(); }
