@@ -101,6 +101,11 @@
   .msg-input-row{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);}
   .msg-input-row textarea{resize:none;} .msg-input-row button{flex-shrink:0;}
   .mobile-topbar{display:none;}
+  .messenger-panel{width:320px;height:440px;}
+  @media (max-width: 420px){
+    #messenger-widget{right:8px !important;bottom:8px !important;}
+    .messenger-panel{width:calc(100vw - 16px);height:60vh;}
+  }
   .loading{padding:60px 0;text-align:center;color:var(--muted);}
   .modal:fullscreen{display:flex;flex-direction:column;justify-content:flex-start;background:var(--bg);width:100vw;max-width:100vw;height:100vh;max-height:100vh;padding:24px;}
   @media (max-width: 780px){
@@ -265,6 +270,14 @@ function allCategories(){ return [...EXPENSE_CATEGORIES.filter(c=>c!=='Diğer'),
 function studentPaid(studentId){
   return state.transactions.filter(t=>t.tur==='gelir' && t.ogrenci_id===studentId).reduce((a,t)=>a+Number(t.tutar),0);
 }
+function renderStudentPicker(selectedId){
+  const selected = selectedId ? state.students.find(s=>s.id===selectedId) : null;
+  return `<div class="student-picker" style="position:relative;">
+    <input type="text" class="student-picker-input" autocomplete="off" placeholder="Öğrenci ismi yaz (2-3 harf)..." value="${selected?esc(selected.ad_soyad):''}">
+    <input type="hidden" name="ogrenciId" value="${selectedId||''}">
+    <div class="student-picker-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.14);z-index:70;max-height:220px;overflow:auto;"></div>
+  </div>`;
+}
 function izinlerOf(p){ return {...DEFAULT_IZIN, ...(p&&p.izinler||{})}; }
 function canTab(tabId){
   if(!profile) return false;
@@ -335,9 +348,6 @@ async function loadTabData(tabId){
     state.smsLog = await fetchTable('sms_log','order=created_at.desc&limit=50');
   } else if(tabId==='egiticiler'){
     state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc');
-  } else if(tabId==='mesajlar'){
-    state.profiles = await fetchTable('profiles','select=id,ad_soyad,role,aktif');
-    state.messages = await fetchTable('messages','order=created_at.asc&limit=500');
   } else if(tabId==='ayarlar'){
     state.bankAccounts = await fetchTable('bank_accounts','order=ad.asc');
     state.customCategories = await fetchTable('custom_categories','order=ad.asc');
@@ -368,8 +378,8 @@ function render(){
     <div class="sidebar">
       <div class="brand"><h1>Direksiyon Ofis</h1><span>ön muhasebe &amp; takip</span></div>
       <div>${tabs.map(t=>{
-        const badge = t.id==='araclar' ? activeWarnings().length : 0;
-        return `<div class="nav-item ${currentTab===t.id?'active':''}" data-tab="${t.id}"><span class="nav-emoji">${t.icon}</span>${t.label}${badge>0?`<span id="araclar-badge" style="background:var(--red);color:#fff;border-radius:20px;font-size:10px;font-weight:700;padding:1px 6px;margin-left:auto;">${badge}</span>`:''}</div>`;
+        const badge = t.id==='araclar' ? activeWarnings().length : (t.id==='mesajlar' ? unreadMessageCount() : 0);
+        return `<div class="nav-item ${currentTab===t.id?'active':''}" data-tab="${t.id}"><span class="nav-emoji">${t.icon}</span>${t.label}${badge>0?`<span style="background:var(--red);color:#fff;border-radius:20px;font-size:10px;font-weight:700;padding:1px 6px;margin-left:auto;">${badge}</span>`:''}</div>`;
       }).join('')}</div>
       <div class="sidebar-foot">
         <div style="color:rgba(255,255,255,.6);margin-bottom:8px;">👤 ${esc(who)}</div>
@@ -385,6 +395,7 @@ function render(){
     </div>
   `;
   renderToastContainer();
+  renderMessengerWidget();
   renderGlobalSearchResults();
   loadTabData(currentTab).then(()=>{
     const main = document.getElementById('main');
@@ -394,7 +405,6 @@ function render(){
     else if(currentTab==='program') main.innerHTML = renderProgram();
     else if(currentTab==='raporlar') main.innerHTML = renderReports();
     else if(currentTab==='sms') main.innerHTML = renderSms();
-    else if(currentTab==='mesajlar'){ main.innerHTML = renderMessages(); scrollThreadToBottom(); }
     else if(currentTab==='egiticiler') main.innerHTML = renderInstructors();
     else if(currentTab==='ayarlar') main.innerHTML = renderSettings();
     renderModal();
@@ -489,7 +499,7 @@ function renderToastContainer(){
   const warns = activeWarnings();
   if(!el){
     el = document.createElement('div'); el.id='toast-container';
-    el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:80;display:flex;flex-direction:column;gap:8px;max-width:340px;';
+    el.style.cssText = 'position:fixed;bottom:16px;left:16px;z-index:80;display:flex;flex-direction:column;gap:8px;max-width:340px;';
     document.body.appendChild(el);
   }
   el.innerHTML = warns.map(w=>`
@@ -557,7 +567,7 @@ function renderKasa(){
             <select name="banka">${state.bankAccounts.length? state.bankAccounts.map(b=>`<option>${esc(b.ad)}</option>`).join('') : '<option value="">— önce Ayarlar sayfasından banka hesabı ekleyin —</option>'}</select>
           </div>
           <label>İlişkili Öğrenci (opsiyonel)</label>
-          <select name="ogrenciId"><option value="">— seçilmedi —</option>${state.students.map(s=>`<option value="${s.id}">${esc(s.ad_soyad)}</option>`).join('')}</select>
+          ${renderStudentPicker('')}
           <label>Açıklama</label><input type="text" name="aciklama" placeholder="örn. 2. taksit ödemesi">
           <div class="btn-row"><button class="btn-amber" type="submit">Gelir Kaydet</button></div>
         </form>
@@ -767,7 +777,7 @@ function renderSms(){
 }
 
 // ================= MESAJLAR =================
-function activeConvo(){ return window.__activeConvo || {type:'genel'}; }
+function activeConvo(){ return window.__activeConvo || {type:'genel', view:'list'}; }
 function convoMessages(){
   const convo = activeConvo();
   if(convo.type==='genel') return state.messages.filter(m=>m.kanal==='genel');
@@ -775,49 +785,124 @@ function convoMessages(){
     (m.gonderen_id===profile.id && m.alici_id===convo.withId) || (m.gonderen_id===convo.withId && m.alici_id===profile.id)
   ));
 }
-function renderMessages(){
-  const convo = activeConvo();
-  const people = state.profiles.filter(p=>p.id!==profile.id && p.aktif!==false);
+function msgLastSeenKey(){ return `msgLastSeen_${profile.id}`; }
+function getMsgLastSeen(){ try{ return localStorage.getItem(msgLastSeenKey())||'1970-01-01T00:00:00.000Z'; }catch(e){ return '1970-01-01T00:00:00.000Z'; } }
+function setMsgLastSeenNow(){ try{ localStorage.setItem(msgLastSeenKey(), new Date().toISOString()); }catch(e){} }
+function unreadMessageCount(){
+  const lastSeen = getMsgLastSeen();
+  return (state.messages||[]).filter(m=> m.gonderen_id!==profile.id && m.created_at>lastSeen && (m.kanal==='genel' || m.alici_id===profile.id)).length;
+}
+function playMessageSound(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const now = ctx.currentTime;
+    [660,880].forEach((f,i)=>{
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.type='sine'; o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001, now+i*0.09);
+      g.gain.exponentialRampToValueAtTime(0.13, now+i*0.09+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+i*0.09+0.22);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(now+i*0.09); o.stop(now+i*0.09+0.24);
+    });
+  }catch(e){}
+}
+async function uploadMessageFile(file){
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+  const path = `${profile.id}/${Date.now()}_${safeName}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/mesaj-dosyalari/${path}`, {
+    method:'POST',
+    headers:{ 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': file.type || 'application/octet-stream' },
+    body: file
+  });
+  if(!res.ok){ const t = await res.text(); throw new Error(t || res.statusText); }
+  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/mesaj-dosyalari/${path}`;
+  return { url: publicUrl, name: file.name, isImage: (file.type||'').startsWith('image/') };
+}
+function renderThreadMessagesHtml(){
   const msgs = [...convoMessages()].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
-  const nameOf = id => { const p=state.profiles.find(x=>x.id===id); return p? p.ad_soyad : '?'; };
-  return `
-    <div class="page-head"><h2>Mesajlar</h2></div>
-    <div class="roadline"></div>
-    <div class="msg-wrap">
-      <div class="msg-people">
-        <div class="msg-person ${convo.type==='genel'?'active':''}" data-action="select-convo" data-type="genel">📢 Genel Kanal<div class="sub">Herkes görür</div></div>
-        ${people.map(p=>`<div class="msg-person ${(convo.type==='dm'&&convo.withId===p.id)?'active':''}" data-action="select-convo" data-type="dm" data-wid="${p.id}">
-          ${p.role==='admin'?'🧑‍💼':'🧑‍🏫'} ${esc(p.ad_soyad)}<div class="sub">Özel mesaj</div></div>`).join('')}
+  const nameOf = id => { const p=(state.profiles||[]).find(x=>x.id===id); return p? p.ad_soyad : '?'; };
+  if(!msgs.length) return `<div class="empty" style="padding:20px 0;">Henüz mesaj yok.</div>`;
+  return msgs.map(m=>`<div class="msg-bubble ${m.gonderen_id===profile.id?'mine':'theirs'}" style="max-width:82%;">
+    <div class="who">${esc(nameOf(m.gonderen_id))}</div>
+    ${m.dosya_url ? (m.dosya_tip==='image' ? `<a href="${esc(m.dosya_url)}" target="_blank"><img src="${esc(m.dosya_url)}" style="max-width:100%;border-radius:8px;margin:4px 0;display:block;"></a>` : `<a href="${esc(m.dosya_url)}" target="_blank" style="display:block;margin:4px 0;color:inherit;">📎 ${esc(m.dosya_adi||'Dosya')}</a>`) : ''}
+    ${m.mesaj? esc(m.mesaj):''}
+    <div class="when">${new Date(m.created_at).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div>
+  </div>`).join('');
+}
+function scrollMsgThreadToBottom(){ const el=document.getElementById('msg-thread'); if(el) el.scrollTop = el.scrollHeight; }
+function renderPeopleListHtml(){
+  const people = (state.profiles||[]).filter(p=>p.id!==profile.id && p.aktif!==false);
+  const q = (window.__msgPeopleQuery||'').toLowerCase();
+  const filteredPeople = q? people.filter(p=>p.ad_soyad.toLowerCase().includes(q)) : people;
+  return `<div data-action="select-convo" data-type="genel" style="padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;">📢 <b>Genel Kanal</b><div style="font-size:11px;color:var(--muted);">Herkes görür</div></div>
+    ${filteredPeople.map(p=>`<div data-action="select-convo" data-type="dm" data-wid="${p.id}" style="padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;">${p.role==='admin'?'🧑‍💼':'🧑‍🏫'} ${esc(p.ad_soyad)}<div style="font-size:11px;color:var(--muted);">Özel mesaj</div></div>`).join('') || `<div style="padding:14px;font-size:12px;color:var(--muted);">Kimse bulunamadı.</div>`}`;
+}
+function updateMsgPeopleList(){ const el=document.getElementById('msg-people-list'); if(el) el.innerHTML = renderPeopleListHtml(); }
+function renderMessengerWidget(){
+  if(!session || !profile) return;
+  let wrap = document.getElementById('messenger-widget');
+  if(!wrap){
+    wrap = document.createElement('div'); wrap.id='messenger-widget';
+    wrap.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:90;';
+    document.body.appendChild(wrap);
+  }
+  const open = !!window.__msgWidgetOpen;
+  const unread = unreadMessageCount();
+  if(!open){
+    wrap.innerHTML = `<button data-action="toggle-messenger" style="width:56px;height:56px;border-radius:50%;background:var(--navy);color:#fff;border:none;box-shadow:0 6px 18px rgba(0,0,0,.28);font-size:24px;cursor:pointer;position:relative;">💬
+      ${unread>0?`<span style="position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:20px;font-size:11px;font-weight:700;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;">${unread}</span>`:''}
+    </button>`;
+    return;
+  }
+  const convo = activeConvo();
+  const nameOf = id => { const p=(state.profiles||[]).find(x=>x.id===id); return p? p.ad_soyad : '?'; };
+  wrap.innerHTML = `
+    <div class="messenger-panel" style="background:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--border);">
+      <div style="background:var(--navy);color:#fff;padding:12px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        ${convo.view==='thread' ? `<span data-action="messenger-back" style="cursor:pointer;font-size:16px;">←</span>` : ''}
+        <div style="font-weight:700;font-size:14px;flex:1;">${convo.view==='thread' ? (convo.type==='genel'?'📢 Genel Kanal':esc(nameOf(convo.withId))) : 'Mesajlar'}</div>
+        <span data-action="toggle-messenger" style="cursor:pointer;font-size:18px;opacity:.85;">✕</span>
       </div>
-      <div class="msg-main">
-        <div class="msg-thread" id="msg-thread">
-          ${msgs.length? msgs.map(m=>`<div class="msg-bubble ${m.gonderen_id===profile.id?'mine':'theirs'}"><div class="who">${esc(nameOf(m.gonderen_id))}</div>${esc(m.mesaj)}
-          <div class="when">${new Date(m.created_at).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div></div>`).join('') : `<div class="empty">Henüz mesaj yok.</div>`}
+      ${convo.view==='thread' ? `
+        <div id="msg-thread" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg);">${renderThreadMessagesHtml()}</div>
+        <div id="msg-file-preview" style="display:none;padding:6px 10px 0 10px;font-size:11px;color:var(--muted);background:#fff;"></div>
+        <form data-action="send-message" style="display:flex;gap:6px;padding:10px;border-top:1px solid var(--border);align-items:flex-end;background:#fff;flex-shrink:0;">
+          <label style="cursor:pointer;padding:6px;font-size:18px;" title="Dosya/Resim gönder">📎<input type="file" id="msg-file-input" style="display:none;"></label>
+          <textarea name="mesaj" rows="1" placeholder="Mesaj yaz..." style="flex:1;resize:none;max-height:70px;"></textarea>
+          <button class="btn-amber btn-sm" type="submit">Gönder</button>
+        </form>
+      ` : `
+        <div style="padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0;">
+          <input type="text" id="msg-people-search" placeholder="Kişi ara..." value="${esc(window.__msgPeopleQuery||'')}" style="font-size:13px;">
         </div>
-        <form class="msg-input-row" data-action="send-message"><textarea name="mesaj" rows="1" placeholder="Mesaj yazın..." required></textarea><button class="btn-amber" type="submit">Gönder</button></form>
-      </div>
+        <div id="msg-people-list" style="flex:1;overflow-y:auto;">${renderPeopleListHtml()}</div>
+      `}
     </div>
   `;
+  if(convo.view==='thread') scrollMsgThreadToBottom();
 }
-function scrollThreadToBottom(){ const el=document.getElementById('msg-thread'); if(el) el.scrollTop = el.scrollHeight; }
 let __msgPollTimer=null;
+let __knownMessageIds = new Set();
 function startMessagePolling(){
   if(__msgPollTimer) clearInterval(__msgPollTimer);
   __msgPollTimer = setInterval(async ()=>{
-    if(currentTab!=='mesajlar' || !session) return;
+    if(!session) return;
     try{
       const fresh = await fetchTable('messages','order=created_at.asc&limit=500');
-      if(JSON.stringify(fresh)!==JSON.stringify(state.messages)){
-        state.messages = fresh;
-        const thread = document.getElementById('msg-thread');
-        if(thread){
-          const nameOf = id => { const p=state.profiles.find(x=>x.id===id); return p? p.ad_soyad : '?'; };
-          thread.innerHTML = [...convoMessages()].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)).map(m=>`<div class="msg-bubble ${m.gonderen_id===profile.id?'mine':'theirs'}"><div class="who">${esc(nameOf(m.gonderen_id))}</div>${esc(m.mesaj)}<div class="when">${new Date(m.created_at).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div></div>`).join('') || `<div class="empty">Henüz mesaj yok.</div>`;
-          scrollThreadToBottom();
-        }
+      let hasNewIncoming = false;
+      fresh.forEach(m=>{
+        if(!__knownMessageIds.has(m.id) && m.gonderen_id!==profile.id && (m.kanal==='genel' || m.alici_id===profile.id)) hasNewIncoming = true;
+      });
+      __knownMessageIds = new Set(fresh.map(m=>m.id));
+      state.messages = fresh;
+      if(hasNewIncoming){
+        playMessageSound();
+        if(window.__msgWidgetOpen) setMsgLastSeenNow();
       }
+      renderMessengerWidget();
     }catch(e){ /* sessizce yoksay */ }
-  }, 6000);
+  }, 5000);
 }
 
 // ================= EĞİTİCİLER =================
@@ -910,7 +995,7 @@ function modalHtml(){
           <select name="banka">${state.bankAccounts.length? state.bankAccounts.map(b=>`<option>${esc(b.ad)}</option>`).join('') : '<option value="">— önce Ayarlar sayfasından ekleyin —</option>'}</select>
         </div>
         <label>Öğrenci (opsiyonel)</label>
-        <select name="ogrenciId"><option value="">— seçilmedi —</option>${state.students.map(s=>`<option value="${s.id}">${esc(s.ad_soyad)}</option>`).join('')}</select>
+        ${renderStudentPicker('')}
         <label>Açıklama</label><input type="text" name="aciklama" placeholder="örn. 2. taksit ödemesi">
         <div class="btn-row"><button class="btn-amber" type="submit">Kaydet</button></div>
       </form>
@@ -1093,13 +1178,28 @@ document.addEventListener('click', async (e)=>{
   const searchWrap = document.getElementById('global-search-wrap');
   const resultsBox = document.getElementById('global-search-results');
   if(resultsBox && resultsBox.style.display!=='none' && searchWrap && !searchWrap.contains(e.target)){ resultsBox.style.display='none'; }
+  document.querySelectorAll('.student-picker-results').forEach(rb=>{
+    if(rb.style.display!=='none' && !rb.closest('.student-picker').contains(e.target)){ rb.style.display='none'; }
+  });
   const navItem = e.target.closest('.nav-item[data-tab]');
-  if(navItem){ await goToTab(navItem.dataset.tab); return; }
+  if(navItem){
+    if(navItem.dataset.tab==='mesajlar'){ window.__msgWidgetOpen=true; setMsgLastSeenNow(); render(); return; }
+    await goToTab(navItem.dataset.tab); return;
+  }
   const t = e.target.closest('[data-action]'); if(!t) return;
   const action = t.dataset.action;
   if(action==='close-modal'){ modal=null; render(); return; }
   if(action==='close-modal-bg'){ if(e.target===t){ modal=null; render(); } return; }
   if(action==='dismiss-warning'){ dismissWarning(t.dataset.key); return; }
+  if(action==='pick-student'){
+    const wrap = t.closest('.student-picker');
+    const hidden = wrap.querySelector('input[type=hidden]');
+    const input = wrap.querySelector('.student-picker-input');
+    const resultsBox = wrap.querySelector('.student-picker-results');
+    hidden.value = t.dataset.id; input.value = t.dataset.name;
+    resultsBox.style.display='none'; resultsBox.innerHTML='';
+    return;
+  }
   if(action==='global-search-goto'){
     const kind=t.dataset.kind, id=t.dataset.id;
     window.__globalSearchQuery='';
@@ -1150,8 +1250,15 @@ document.addEventListener('click', async (e)=>{
         { const el = document.getElementById('schedule-modal-el'); if(el && el.requestFullscreen) el.requestFullscreen().catch(()=>{}); }
         break;
       case 'select-convo':
-        window.__activeConvo = t.dataset.type==='genel' ? {type:'genel'} : {type:'dm', withId:t.dataset.wid};
-        render(); break;
+        window.__activeConvo = t.dataset.type==='genel' ? {type:'genel', view:'thread'} : {type:'dm', withId:t.dataset.wid, view:'thread'};
+        setMsgLastSeenNow(); renderMessengerWidget(); break;
+      case 'messenger-back':
+        window.__activeConvo = {...activeConvo(), view:'list'};
+        renderMessengerWidget(); break;
+      case 'toggle-messenger':
+        window.__msgWidgetOpen = !window.__msgWidgetOpen;
+        if(window.__msgWidgetOpen) setMsgLastSeenNow();
+        renderMessengerWidget(); break;
       case 'open-instructor-detail': modal={type:'instructor-detail', id:t.dataset.id}; render(); break;
       case 'open-add-instructor': modal={type:'add-instructor'}; render(); break;
       case 'del-instructor':
@@ -1184,11 +1291,32 @@ document.addEventListener('change', (e)=>{
     window.__reportFilters[e.target.dataset.field] = e.target.value;
     if(e.target.type!=='text') render();
   }
+  if(e.target.id==='msg-file-input'){
+    const f = e.target.files && e.target.files[0];
+    const preview = document.getElementById('msg-file-preview');
+    if(preview){
+      if(f){ preview.style.display='block'; preview.textContent = '📎 '+f.name; }
+      else { preview.style.display='none'; preview.textContent=''; }
+    }
+  }
 });
 document.addEventListener('input', (e)=>{
   if(e.target.id==='global-search-input'){ window.__globalSearchQuery = e.target.value; renderGlobalSearchResults(); return; }
+  if(e.target.id==='msg-people-search'){ window.__msgPeopleQuery = e.target.value; updateMsgPeopleList(); return; }
+  if(e.target.classList && e.target.classList.contains('student-picker-input')){
+    const wrap = e.target.closest('.student-picker');
+    const hidden = wrap.querySelector('input[type=hidden]');
+    const resultsBox = wrap.querySelector('.student-picker-results');
+    const q = e.target.value.trim().toLowerCase();
+    hidden.value = '';
+    if(q.length<2){ resultsBox.style.display='none'; resultsBox.innerHTML=''; return; }
+    const matches = state.students.filter(s=>(s.ad_soyad||'').toLowerCase().includes(q)).slice(0,8);
+    resultsBox.style.display='block';
+    resultsBox.innerHTML = matches.length? matches.map(s=>`<div data-action="pick-student" data-id="${s.id}" data-name="${esc(s.ad_soyad)}" style="padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);">${esc(s.ad_soyad)}</div>`).join('') : `<div style="padding:8px 10px;font-size:12px;color:var(--muted);">Sonuç yok.</div>`;
+    return;
+  }
   if(e.target.classList && e.target.classList.contains('money-input')) formatMoneyLive(e.target);
-  if(e.target.name==='mesaj') window.__smsDraft = e.target.value;
+  if(e.target.name==='mesaj' && e.target.closest('form') && e.target.closest('form').dataset.action==='send-sms') window.__smsDraft = e.target.value;
   if(e.target.dataset.role==='report-filter' && e.target.type==='text'){
     window.__reportFilters = window.__reportFilters||{}; window.__reportFilters[e.target.dataset.field]=e.target.value; render();
     setTimeout(()=>{ const inp=document.querySelector('input[data-field="q"]'); if(inp){ inp.focus(); inp.selectionStart=inp.selectionEnd=inp.value.length; } },0);
@@ -1216,6 +1344,9 @@ document.addEventListener('submit', async (e)=>{
       try{ state.students = await fetchTable('students','order=ad_soyad.asc'); }catch(e){}
       try{ state.schedules = await fetchTable('schedules'); }catch(e){}
       try{ if(profile.role==='admin') state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc'); }catch(e){}
+      try{ state.profiles = await fetchTable('profiles','select=id,ad_soyad,role,aktif'); }catch(e){}
+      try{ state.messages = await fetchTable('messages','order=created_at.asc&limit=500'); }catch(e){}
+      __knownMessageIds = new Set((state.messages||[]).map(m=>m.id));
       render(); startMessagePolling();
     }
     else if(action==='do-signup'){
@@ -1303,11 +1434,23 @@ document.addEventListener('submit', async (e)=>{
       render(); modal={type:'schedule-detail', id:sid}; render();
     }
     else if(action==='send-message'){
-      const text=(fd.get('mesaj')||'').trim(); if(!text) return;
+      const text=(fd.get('mesaj')||'').trim();
+      const fileInput = document.getElementById('msg-file-input');
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      if(!text && !file) return;
       const convo = activeConvo();
-      await insertRow('messages', {kanal: convo.type==='genel'?'genel':'ozel', gonderen_id:profile.id, alici_id: convo.type==='dm'? convo.withId : null, mesaj:text});
+      const payload = { kanal: convo.type==='genel'?'genel':'ozel', gonderen_id:profile.id, alici_id: convo.type==='dm'? convo.withId : null, mesaj:text };
+      if(file){
+        try{
+          const uploaded = await uploadMessageFile(file);
+          payload.dosya_url = uploaded.url; payload.dosya_adi = uploaded.name; payload.dosya_tip = uploaded.isImage?'image':'file';
+        }catch(err){ alert('Dosya gönderilemedi: '+err.message); return; }
+      }
+      await insertRow('messages', payload);
       state.messages = await fetchTable('messages','order=created_at.asc&limit=500');
-      render();
+      __knownMessageIds = new Set(state.messages.map(m=>m.id));
+      setMsgLastSeenNow();
+      renderMessengerWidget();
     }
     else if(action==='add-instructor-admin'){
       await signUp(fd.get('email'), fd.get('password'), fd.get('adSoyad'));
