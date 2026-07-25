@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#F5F2EA; --surface:#FFFFFF; --ink:#242A31; --muted:#767D87;
@@ -198,6 +199,48 @@ const deleteRow = (table, match) => {
 async function signIn(email, password){
   const data = await sbFetch('/auth/v1/token?grant_type=password', {method:'POST', body:JSON.stringify({email,password})});
   session = data;
+  persistSession();
+}
+function persistSession(){ try{ localStorage.setItem('sb_session', JSON.stringify({access_token:session.access_token, refresh_token:session.refresh_token})); }catch(e){} }
+function clearPersistedSession(){ try{ localStorage.removeItem('sb_session'); }catch(e){} }
+async function loadCoreDataAfterAuth(){
+  currentTab = profile.role==='admin' ? 'kasa' : 'program';
+  try{ state.vehicles = await fetchTable('vehicles','order=plaka.asc'); }catch(e){}
+  try{ state.students = await fetchTable('students','order=ad_soyad.asc'); }catch(e){}
+  try{ state.schedules = await fetchTable('schedules'); }catch(e){}
+  try{ if(profile.role==='admin') state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc'); }catch(e){}
+  try{ state.profiles = await fetchTable('profiles','select=id,ad_soyad,role,aktif'); }catch(e){}
+  try{ state.messages = await fetchTable('messages','order=created_at.asc&limit=500'); }catch(e){}
+  __knownMessageIds = new Set((state.messages||[]).map(m=>m.id));
+}
+async function restoreSession(){
+  let saved;
+  try{ saved = JSON.parse(localStorage.getItem('sb_session')||'null'); }catch(e){ saved=null; }
+  if(!saved || !saved.refresh_token) return;
+  try{
+    const data = await sbFetch('/auth/v1/token?grant_type=refresh_token', {method:'POST', body:JSON.stringify({refresh_token: saved.refresh_token})});
+    session = data; persistSession();
+    const profs = await fetchTable('profiles', `id=eq.${session.user.id}`);
+    profile = profs && profs[0];
+    if(!profile){ session=null; profile=null; clearPersistedSession(); return; }
+    await loadCoreDataAfterAuth();
+    resetInactivityTimer();
+    startMessagePolling();
+    startTokenRefreshTimer();
+  }catch(e){
+    session=null; profile=null; clearPersistedSession();
+  }
+}
+let __tokenRefreshTimer=null;
+function startTokenRefreshTimer(){
+  if(__tokenRefreshTimer) clearInterval(__tokenRefreshTimer);
+  __tokenRefreshTimer = setInterval(async ()=>{
+    if(!session || !session.refresh_token) return;
+    try{
+      const data = await sbFetch('/auth/v1/token?grant_type=refresh_token', {method:'POST', body:JSON.stringify({refresh_token: session.refresh_token})});
+      session = data; persistSession();
+    }catch(e){ /* sessizce yoksay */ }
+  }, 50*60*1000);
 }
 async function signUp(email, password, adSoyad){
   const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
@@ -209,7 +252,21 @@ async function signUp(email, password, adSoyad){
   if(!res.ok){ throw new Error((data && (data.message||data.msg||data.error_description)) || res.statusText); }
   return data;
 }
-function signOut(){ session=null; profile=null; currentUser_reset(); }
+function signOut(){ session=null; profile=null; clearPersistedSession(); if(__inactivityTimer) clearTimeout(__inactivityTimer); if(__tokenRefreshTimer) clearInterval(__tokenRefreshTimer); currentUser_reset(); }
+const INACTIVITY_LIMIT_MS = 30*60*1000; // 30 dakika hareketsizlik sonrası otomatik çıkış
+let __inactivityTimer=null;
+function resetInactivityTimer(){
+  if(!session) return;
+  if(__inactivityTimer) clearTimeout(__inactivityTimer);
+  __inactivityTimer = setTimeout(()=>{
+    if(session){
+      signOut();
+      alert('Güvenlik nedeniyle 30 dakika hareketsizlik sonrası oturumun kapatıldı. Lütfen tekrar giriş yap.');
+    }
+  }, INACTIVITY_LIMIT_MS);
+}
+document.addEventListener('click', resetInactivityTimer);
+document.addEventListener('keydown', resetInactivityTimer);
 function currentUser_reset(){ currentTab='kasa'; render(); }
 
 // ---------- şifremi unuttum / şifre sıfırlama ----------
@@ -227,6 +284,20 @@ async function setNewPassword(newPassword){
       'Content-Type':'application/json',
       'apikey': SUPABASE_ANON_KEY,
       'Authorization': `Bearer ${recoverySession.access_token}`
+    },
+    body: JSON.stringify({password:newPassword})
+  });
+  const data = await res.json();
+  if(!res.ok){ throw new Error((data && (data.message||data.msg||data.error_description)) || res.statusText); }
+  return data;
+}
+async function changeOwnPassword(newPassword){
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method:'PUT',
+    headers:{
+      'Content-Type':'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${session.access_token}`
     },
     body: JSON.stringify({password:newPassword})
   });
@@ -324,12 +395,12 @@ function renderGlobalSearchResults(){
 // ---------- data loading per tab ----------
 async function loadTabData(tabId){
   if(tabId==='kasa'){
-    state.transactions = await fetchTable('transactions','order=tarih.desc,created_at.desc&limit=500');
+    state.transactions = await fetchTable('transactions','order=tarih.desc,created_at.desc&limit=8000');
     state.students = await fetchTable('students','order=ad_soyad.asc');
     state.bankAccounts = await fetchTable('bank_accounts','order=ad.asc');
   } else if(tabId==='ogrenciler'){
     state.students = await fetchTable('students','order=ad_soyad.asc');
-    state.transactions = await fetchTable('transactions');
+    state.transactions = await fetchTable('transactions','order=tarih.desc&limit=8000');
     if(profile.role==='admin') state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc');
   } else if(tabId==='araclar'){
     state.vehicles = await fetchTable('vehicles','order=plaka.asc');
@@ -373,7 +444,10 @@ function render(){
   app.innerHTML = `
     <div class="mobile-topbar">
       <div><h1 style="font-family:'Space Grotesk',sans-serif;">Direksiyon Ofis</h1><div class="who">👤 ${esc(who)}</div></div>
-      <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.35);" data-action="logout">Çıkış</button>
+      <div style="display:flex;gap:6px;">
+        <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.35);" data-action="open-change-password">🔑</button>
+        <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.35);" data-action="logout">Çıkış</button>
+      </div>
     </div>
     <div class="sidebar">
       <div class="brand"><h1>Direksiyon Ofis</h1><span>ön muhasebe &amp; takip</span></div>
@@ -383,6 +457,7 @@ function render(){
       }).join('')}</div>
       <div class="sidebar-foot">
         <div style="color:rgba(255,255,255,.6);margin-bottom:8px;">👤 ${esc(who)}</div>
+        <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.25);margin-bottom:6px;" data-action="open-change-password">🔑 Şifremi Değiştir</button>
         <button class="btn-ghost btn-sm" style="color:#fff;border-color:rgba(255,255,255,.25);" data-action="logout">Çıkış Yap</button>
       </div>
     </div>
@@ -529,7 +604,6 @@ function renderKasa(){
   const tGelir=tNakit+tKart+tHesap;
   const tGider=sum(state.transactions,t=>t.tur==='gider');
   const tNet=tGelir-tGider;
-  const rows = [...state.transactions].slice(0,80);
   const studentName = id => { const s=state.students.find(x=>x.id===id); return s? s.ad_soyad : ''; };
 
   return `
@@ -586,23 +660,98 @@ function renderKasa(){
       </div>
     </div>
     <div class="panel">
-      <h3>İşlem Geçmişi <span style="color:var(--muted);font-weight:400;">(son 80 kayıt)</span></h3>
-      ${rows.length? `<table><thead><tr><th>Tarih</th><th>Tür</th><th>Kategori/Yöntem</th><th>Öğrenci</th><th>Açıklama</th><th>Tutar</th><th></th></tr></thead><tbody>
-        ${rows.map(t=>`<tr>
-          <td class="mono">${fmtDate(t.tarih)}</td>
-          <td><span class="tag ${t.tur}">${t.tur==='gelir'?'Gelir':'Gider'}</span></td>
-          <td>${t.tur==='gelir'?`<span class="tag method">${esc(t.yontem)}${t.banka?' · '+esc(t.banka):''}</span>`:esc(t.kategori)}</td>
-          <td>${esc(studentName(t.ogrenci_id))||'-'}</td>
-          <td>${esc(t.aciklama)||'-'}</td>
-          <td class="mono" style="color:${t.tur==='gelir'?'var(--green)':'var(--red)'}">${t.tur==='gelir'?'+':'-'}${fmtMoney(t.tutar)}</td>
-          <td style="white-space:nowrap;">
-            <button class="btn-ghost btn-sm" data-action="open-edit-transaction" data-id="${t.id}">Düzenle</button>
-            <button class="btn-ghost btn-sm" data-action="del-transaction" data-id="${t.id}">Sil</button>
-          </td>
-        </tr>`).join('')}
-      </tbody></table>` : `<div class="empty">Henüz işlem yok.</div>`}
+      <h3>Bugün — Kasa Defteri <span style="color:var(--muted);font-weight:400;">(${fmtDate(today)})</span></h3>
+      ${renderDayLedger(today, todays, devirForDate(today))}
+    </div>
+    <div class="panel">
+      <h3>Geçmiş Günler</h3>
+      <div class="muted-note" style="margin-top:0;">Yıl / ay / gün üzerine tıklayarak o günün kasa defterini açabilirsin.</div>
+      ${renderKasaHistoryTree()}
     </div>
   `;
+}
+function devirForDate(dateStr){
+  return state.transactions
+    .filter(t=>t.tarih < dateStr)
+    .reduce((a,t)=>a+(t.tur==='gelir'?Number(t.tutar):-Number(t.tutar)),0);
+}
+function renderDayLedger(dateStr, dayTransactions, devir){
+  const studentName = id => { const s=state.students.find(x=>x.id===id); return s? s.ad_soyad : ''; };
+  const gelirRows = dayTransactions.filter(t=>t.tur==='gelir');
+  const giderRows = dayTransactions.filter(t=>t.tur==='gider');
+  const gelirToplam = gelirRows.reduce((a,t)=>a+Number(t.tutar),0);
+  const giderToplam = giderRows.reduce((a,t)=>a+Number(t.tutar),0);
+  const maxRows = Math.max(gelirRows.length, giderRows.length, 1);
+  const gelirLabel = t => { const n = esc(studentName(t.ogrenci_id)) || esc(t.aciklama) || 'Gelir'; return `${n}${t.yontem?` <span style="color:var(--muted);">(${esc(t.yontem)}${t.banka?' · '+esc(t.banka):''})</span>`:''}`; };
+  const giderLabel = t => esc(t.aciklama) || esc(t.kategori) || 'Gider';
+  let rowsHtml = '';
+  for(let i=0;i<maxRows;i++){
+    const g = gelirRows[i], gi = giderRows[i];
+    rowsHtml += `<tr>
+      <td>${g? gelirLabel(g) : ''}</td>
+      <td class="mono" style="color:var(--green);white-space:nowrap;">${g? fmtMoney(g.tutar):''}</td>
+      <td style="white-space:nowrap;">${g? `<button class="btn-ghost btn-sm" data-action="open-edit-transaction" data-id="${g.id}">✎</button><button class="btn-ghost btn-sm" data-action="del-transaction" data-id="${g.id}">✕</button>`:''}</td>
+      <td>${gi? giderLabel(gi) : ''}</td>
+      <td class="mono" style="color:var(--red);white-space:nowrap;">${gi? fmtMoney(gi.tutar):''}</td>
+      <td style="white-space:nowrap;">${gi? `<button class="btn-ghost btn-sm" data-action="open-edit-transaction" data-id="${gi.id}">✎</button><button class="btn-ghost btn-sm" data-action="del-transaction" data-id="${gi.id}">✕</button>`:''}</td>
+    </tr>`;
+  }
+  const araToplam = devir + gelirToplam;
+  const net = araToplam - giderToplam;
+  return `
+    <div class="muted-note" style="margin-bottom:8px;">DEVİR (önceki günlerden gelen bakiye): <b class="mono">${fmtMoney(devir)}</b></div>
+    <table><thead><tr><th>ÖDEME (GELEN)</th><th>Tutar</th><th></th><th>ÖDEME (GİDEN)</th><th>Tutar</th><th></th></tr></thead>
+    <tbody>${rowsHtml}</tbody></table>
+    <div class="roadline" style="margin:10px 0;"></div>
+    <div class="cards">
+      <div class="card pos"><div class="label">Gün Sonu Toplam (Gelen)</div><div class="value">${fmtMoney(gelirToplam)}</div></div>
+      <div class="card neg"><div class="label">Gün Sonu Toplam (Giden)</div><div class="value">${fmtMoney(giderToplam)}</div></div>
+      <div class="card"><div class="label">Ara Toplam (Devir+Gelen)</div><div class="value">${fmtMoney(araToplam)}</div></div>
+      <div class="card ${net>=0?'pos':'neg'}"><div class="label">Net (Devir+Gelen-Giden)</div><div class="value">${fmtMoney(net)}</div></div>
+    </div>
+  `;
+}
+function renderKasaHistoryTree(){
+  const today = todayStr();
+  const byDate = {};
+  state.transactions.forEach(t=>{ (byDate[t.tarih] = byDate[t.tarih]||[]).push(t); });
+  const dates = Object.keys(byDate).filter(d=>d!==today).sort((a,b)=>b.localeCompare(a));
+  if(!dates.length) return `<div class="empty">Geçmiş kayıt yok.</div>`;
+  const tree = {};
+  dates.forEach(d=>{
+    const [y,m,day] = d.split('-');
+    tree[y] = tree[y]||{}; tree[y][m] = tree[y][m]||{}; tree[y][m][day] = d;
+  });
+  const monthNames = ['','Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+  const open = window.__kasaTreeOpen || {};
+  const years = Object.keys(tree).sort((a,b)=>b.localeCompare(a));
+  return years.map(y=>{
+    const yKey = `y-${y}`; const yOpen = !!open[yKey];
+    const months = Object.keys(tree[y]).sort((a,b)=>b.localeCompare(a));
+    return `<div style="margin-bottom:4px;">
+      <div data-action="toggle-kasa-tree" data-key="${yKey}" style="cursor:pointer;font-weight:700;padding:8px 4px;display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--border);">
+        <span>${yOpen?'▾':'▸'}</span> ${y}
+      </div>
+      ${yOpen? months.map(m=>{
+        const mKey = `${yKey}-m-${m}`; const mOpen = !!open[mKey];
+        const days = Object.keys(tree[y][m]).sort((a,b)=>b.localeCompare(a));
+        return `<div style="margin-left:16px;">
+          <div data-action="toggle-kasa-tree" data-key="${mKey}" style="cursor:pointer;font-weight:600;padding:7px 4px;display:flex;align-items:center;gap:6px;">
+            <span>${mOpen?'▾':'▸'}</span> ${monthNames[parseInt(m,10)]}
+          </div>
+          ${mOpen? days.map(day=>{
+            const fullDate = tree[y][m][day]; const dKey = `${mKey}-d-${day}`; const dOpen = !!open[dKey];
+            return `<div style="margin-left:16px;">
+              <div data-action="toggle-kasa-tree" data-key="${dKey}" style="cursor:pointer;padding:6px 4px;display:flex;align-items:center;gap:6px;">
+                <span>${dOpen?'▾':'▸'}</span> ${fmtDate(fullDate)}
+              </div>
+              ${dOpen? `<div style="margin:6px 0 14px 16px;">${renderDayLedger(fullDate, byDate[fullDate], devirForDate(fullDate))}</div>` : ''}
+            </div>`;
+          }).join('') : ''}
+        </div>`;
+      }).join('') : ''}
+    </div>`;
+  }).join('');
 }
 
 // ================= ÖĞRENCİLER =================
@@ -611,7 +760,13 @@ function renderStudents(){
   const list = state.students.filter(s=> !q || s.ad_soyad.toLowerCase().includes(q) || (s.telefon||'').includes(q));
   const insName = id => { const i=state.instructors.find(x=>x.id===id); return i? i.ad_soyad : '-'; };
   return `
-    <div class="page-head"><h2>Öğrenciler</h2><button class="btn-amber" data-action="open-add-student">+ Yeni Öğrenci</button></div>
+    <div class="page-head"><h2>Öğrenciler</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-ghost" data-action="export-students-excel">📤 Ödemeleri Excel'e Aktar</button>
+        <button class="btn-ghost" data-action="open-import-students">📥 Excel'den İçe Aktar</button>
+        <button class="btn-amber" data-action="open-add-student">+ Yeni Öğrenci</button>
+      </div>
+    </div>
     <div class="roadline"></div>
     <div class="search-row"><input placeholder="İsim veya telefon ara..." data-action="search-student" value="${esc(window.__studentQuery||'')}"></div>
     <div class="panel">
@@ -900,9 +1055,19 @@ function startMessagePolling(){
         playMessageSound();
         if(window.__msgWidgetOpen) setMsgLastSeenNow();
       }
-      renderMessengerWidget();
+      updateMsgWidgetLive();
     }catch(e){ /* sessizce yoksay */ }
   }, 5000);
+}
+function updateMsgWidgetLive(){
+  if(!window.__msgWidgetOpen){ renderMessengerWidget(); return; }
+  const convo = activeConvo();
+  if(convo.view==='thread'){
+    const thread = document.getElementById('msg-thread');
+    if(thread){ thread.innerHTML = renderThreadMessagesHtml(); scrollMsgThreadToBottom(); }
+  } else {
+    updateMsgPeopleList();
+  }
 }
 
 // ================= EĞİTİCİLER =================
@@ -924,6 +1089,23 @@ function renderInstructors(){
 }
 
 // ================= AYARLAR =================
+async function exportFullBackup(){
+  const btn = document.getElementById('export-backup-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Yedekleniyor...'; }
+  const tables = ['students','vehicles','vehicle_records','transactions','schedules','lessons','messages','sms_templates','sms_log','bank_accounts','custom_categories','profiles','app_settings'];
+  const backup = { __olusturulma_tarihi: new Date().toISOString() };
+  for(const t of tables){
+    try{ backup[t] = await fetchTable(t); }catch(e){ backup[t] = {hata:e.message}; }
+  }
+  const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `direksiyon-ofis-yedek-${todayStr()}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  if(btn){ btn.disabled=false; btn.textContent='Tüm Verileri Yedekle (.json indir)'; }
+  alert('Yedek dosyası indirildi.');
+}
 function renderSettings(){
   return `
     <div class="page-head"><h2>Ayarlar</h2></div>
@@ -943,6 +1125,10 @@ function renderSettings(){
     <div class="panel"><h3>Özel Gider Kategorisi Ekle</h3>
       <form data-action="add-category"><label>Kategori Adı</label><input name="kategori" required><div class="btn-row"><button class="btn-amber" type="submit">Ekle</button></div></form>
       <div style="margin-top:12px;">${state.customCategories.map(c=>`<span class="chip">${esc(c.ad)} <button class="link-btn" data-action="del-category" data-id="${c.id}" style="color:var(--red)">✕</button></span>`).join('')||'<span class="muted-note">Henüz özel kategori eklenmedi.</span>'}</div>
+    </div>
+    <div class="panel"><h3>💾 Veri Yedekleme</h3>
+      <div class="muted-note" style="margin-top:0;">Tüm öğrenci, araç, kasa, program ve mesaj verilerinin anlık bir kopyasını, bilgisayarına indirilecek tek bir dosya olarak alır. Düzenli aralıklarla (örn. haftada bir) indirip saklamanı öneririz.</div>
+      <div class="btn-row"><button class="btn-navy" data-action="export-backup" id="export-backup-btn">Tüm Verileri Yedekle (.json indir)</button></div>
     </div>
   `;
 }
@@ -1001,6 +1187,16 @@ function modalHtml(){
       </form>
     </div></div>`;
   }
+  if(modal.type==='import-students') return `
+    <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
+      <span class="close-x" data-action="close-modal">✕</span><h3>Excel'den Öğrenci İçe Aktar</h3>
+      <div class="muted-note">Dosyanda şu başlıklar olmalı: <b>Ad Soyad, Telefon, Ehliyet Sınıfı, Kayıt Tarihi, Ücret</b>. Emin değilsen önce şablonu indir, doldur, sonra buradan yükle. "Ad Soyad" olmayan satırlar atlanır.</div>
+      <div class="btn-row"><button type="button" class="btn-ghost" data-action="download-import-template">📄 Şablonu İndir</button></div>
+      <form data-action="do-import-students">
+        <label>Excel Dosyası (.xlsx)</label><input type="file" name="dosya" accept=".xlsx,.xls" required>
+        <div class="btn-row"><button class="btn-amber" type="submit">İçe Aktar</button></div>
+      </form>
+    </div></div>`;
   if(modal.type==='add-student') return `
     <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>Yeni Öğrenci</h3>
@@ -1104,6 +1300,16 @@ function modalHtml(){
       </div>
     </div></div>`;
   }
+  if(modal.type==='change-password') return `
+    <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
+      <span class="close-x" data-action="close-modal">✕</span><h3>Şifremi Değiştir</h3>
+      <div class="muted-note">Hesabın için yeni bir şifre belirle. Kaydettikten sonra bir sonraki girişte bu şifreyi kullan.</div>
+      <form data-action="change-own-password">
+        <label>Yeni Şifre (en az 6 karakter)</label><input name="password" type="password" minlength="6" required autofocus>
+        <label>Yeni Şifre (tekrar)</label><input name="password2" type="password" minlength="6" required>
+        <div class="btn-row"><button class="btn-amber" type="submit">Güncelle</button></div>
+      </form>
+    </div></div>`;
   if(modal.type==='add-instructor') return `
     <div class="modal-bg" data-action="close-modal-bg"><div class="modal">
       <span class="close-x" data-action="close-modal">✕</span><h3>Yeni Eğitici Ekle</h3>
@@ -1155,6 +1361,75 @@ function renderModal(){
   document.body.appendChild(div);
 }
 
+function exportStudentsExcel(){
+  if(!window.XLSX){ alert('Excel kütüphanesi yüklenemedi. İnternet bağlantını kontrol et.'); return; }
+  const summaryRows = state.students.map(s=>{
+    const paid = studentPaid(s.id);
+    const remaining = Number(s.ucret||0) - paid;
+    return {
+      'Ad Soyad': s.ad_soyad, 'Telefon': s.telefon||'', 'Ehliyet Sınıfı': s.ehliyet_sinifi||'',
+      'Kayıt Tarihi': s.kayit_tarihi||'', 'Ücret': Number(s.ucret||0), 'Ödenen': paid, 'Kalan': remaining
+    };
+  });
+  const paymentRows = state.transactions
+    .filter(t=>t.tur==='gelir' && t.ogrenci_id)
+    .map(t=>{
+      const s = state.students.find(x=>x.id===t.ogrenci_id);
+      return { 'Tarih': t.tarih, 'Öğrenci': s? s.ad_soyad : '(silinmiş öğrenci)', 'Tutar': Number(t.tutar), 'Yöntem': t.yontem||'', 'Banka/POS': t.banka||'', 'Açıklama': t.aciklama||'' };
+    })
+    .sort((a,b)=> a.Tarih.localeCompare(b.Tarih));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Öğrenci Özet');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentRows), 'Ödeme Detayları');
+  XLSX.writeFile(wb, `ogrenci-odemeleri-${todayStr()}.xlsx`);
+}
+function downloadStudentImportTemplate(){
+  if(!window.XLSX){ alert('Excel kütüphanesi yüklenemedi. İnternet bağlantını kontrol et.'); return; }
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet([
+    {'Ad Soyad':'Ahmet Yılmaz','Telefon':'05xxxxxxxxx','Ehliyet Sınıfı':'B','Kayıt Tarihi':'2026-01-15','Ücret':15000}
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Öğrenciler');
+  XLSX.writeFile(wb, 'ogrenci-import-sablonu.xlsx');
+}
+function normalizeHeaderKey(h){
+  return (h||'').toString().trim().toLowerCase()
+    .replace(/ı/g,'i').replace(/i̇/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g').replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c');
+}
+function normalizeDateForImport(val){
+  if(val instanceof Date && !isNaN(val)) return val.toISOString().slice(0,10);
+  const s = (val||'').toString().trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})/);
+  if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+  return todayStr();
+}
+async function importStudentsFromFile(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, {type:'array', cellDates:true});
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
+  let success=0, fail=0;
+  for(const row of rows){
+    const norm = {};
+    Object.keys(row).forEach(k=>{ norm[normalizeHeaderKey(k)] = row[k]; });
+    const adSoyad = (norm['ad soyad'] || norm['adsoyad'] || norm['isim'] || '').toString().trim();
+    if(!adSoyad){ fail++; continue; }
+    const telefon = (norm['telefon']||'').toString().trim();
+    const ehliyet = (norm['ehliyet sinifi']||norm['sinif']||norm['ehliyet']||'').toString().trim();
+    const ucret = moneyValue((norm['ucret']!==undefined? norm['ucret'] : 0).toString());
+    const kayitTarihi = normalizeDateForImport(norm['kayit tarihi']||norm['tarih']);
+    try{
+      await insertRow('students', {
+        ad_soyad: adSoyad, telefon, ehliyet_sinifi: ehliyet, kayit_tarihi: kayitTarihi,
+        ucret, egitici_id: profile.role==='admin' ? null : profile.id
+      });
+      success++;
+    }catch(e){ fail++; }
+  }
+  return { success, fail, total: rows.length };
+}
 function exportSchedulePdf(scheduleId){
   const sc = state.schedules.find(x=>x.id===scheduleId); if(!sc) return;
   const student = state.students.find(x=>x.id===sc.ogrenci_id);
@@ -1214,6 +1489,9 @@ document.addEventListener('click', async (e)=>{
       case 'auth-mode': authMode=t.dataset.val; render(); break;
       case 'logout': signOut(); break;
       case 'open-add-student': modal={type:'add-student'}; render(); break;
+      case 'export-students-excel': exportStudentsExcel(); break;
+      case 'open-import-students': modal={type:'import-students'}; render(); break;
+      case 'download-import-template': downloadStudentImportTemplate(); break;
       case 'quick-income': modal={type:'quick-income', yontem:t.dataset.yontem}; render(); break;
       case 'open-student-detail': modal={type:'student-detail', id:t.dataset.id}; render(); break;
       case 'del-student':
@@ -1261,11 +1539,17 @@ document.addEventListener('click', async (e)=>{
         renderMessengerWidget(); break;
       case 'open-instructor-detail': modal={type:'instructor-detail', id:t.dataset.id}; render(); break;
       case 'open-add-instructor': modal={type:'add-instructor'}; render(); break;
+      case 'open-change-password': modal={type:'change-password'}; render(); break;
       case 'del-instructor':
         if(confirm('Bu eğiticiyi silmek istediğinize emin misiniz? Bu, hesabın uygulamaya erişimini tamamen kaldırır.')){ await deleteRow('profiles',{id:t.dataset.id}); await goToTab('egiticiler'); }
         break;
       case 'del-bank': await deleteRow('bank_accounts',{id:t.dataset.id}); await goToTab('ayarlar'); break;
       case 'del-category': await deleteRow('custom_categories',{id:t.dataset.id}); await goToTab('ayarlar'); break;
+      case 'export-backup': await exportFullBackup(); break;
+      case 'toggle-kasa-tree':
+        window.__kasaTreeOpen = window.__kasaTreeOpen || {};
+        window.__kasaTreeOpen[t.dataset.key] = !window.__kasaTreeOpen[t.dataset.key];
+        render(); break;
     }
   }catch(err){ alert('Hata: '+err.message); }
 });
@@ -1338,16 +1622,10 @@ document.addEventListener('submit', async (e)=>{
       await signIn(fd.get('email'), fd.get('password'));
       const profs = await fetchTable('profiles', `id=eq.${session.user.id}`);
       profile = profs && profs[0];
-      if(!profile){ alert('Profil bulunamadı, lütfen tekrar deneyin.'); session=null; render(); return; }
-      currentTab = profile.role==='admin' ? 'kasa' : 'program';
-      try{ state.vehicles = await fetchTable('vehicles','order=plaka.asc'); }catch(e){}
-      try{ state.students = await fetchTable('students','order=ad_soyad.asc'); }catch(e){}
-      try{ state.schedules = await fetchTable('schedules'); }catch(e){}
-      try{ if(profile.role==='admin') state.instructors = await fetchTable('profiles','role=eq.egitici&order=ad_soyad.asc'); }catch(e){}
-      try{ state.profiles = await fetchTable('profiles','select=id,ad_soyad,role,aktif'); }catch(e){}
-      try{ state.messages = await fetchTable('messages','order=created_at.asc&limit=500'); }catch(e){}
-      __knownMessageIds = new Set((state.messages||[]).map(m=>m.id));
-      render(); startMessagePolling();
+      if(!profile){ alert('Profil bulunamadı, lütfen tekrar deneyin.'); session=null; clearPersistedSession(); render(); return; }
+      await loadCoreDataAfterAuth();
+      resetInactivityTimer();
+      render(); startMessagePolling(); startTokenRefreshTimer();
     }
     else if(action==='do-signup'){
       await signUp(fd.get('email'), fd.get('password'), fd.get('adSoyad'));
@@ -1395,6 +1673,16 @@ document.addEventListener('submit', async (e)=>{
       const egiticiId = profile.role==='admin' ? (fd.get('egiticiId')||null) : profile.id;
       await insertRow('students', {ad_soyad:fd.get('adSoyad'), telefon:fd.get('telefon'), ehliyet_sinifi:fd.get('ehliyetSinifi'), kayit_tarihi:fd.get('kayitTarihi'), ucret:moneyValue(fd.get('ucret')), notlar:fd.get('notlar'), egitici_id:egiticiId});
       modal=null; await goToTab('ogrenciler');
+    }
+    else if(action==='do-import-students'){
+      const file = form.querySelector('input[type=file]').files[0];
+      if(!file){ alert('Lütfen bir dosya seç.'); return; }
+      if(!window.XLSX){ alert('Excel kütüphanesi yüklenemedi. İnternet bağlantını kontrol et.'); return; }
+      const submitBtn = form.querySelector('button[type=submit]'); if(submitBtn){ submitBtn.disabled=true; submitBtn.textContent='İçe aktarılıyor...'; }
+      const result = await importStudentsFromFile(file);
+      modal=null;
+      alert(`İçe aktarma tamamlandı: ${result.success} öğrenci eklendi, ${result.fail} satır atlandı (toplam ${result.total} satır okundu).`);
+      await goToTab('ogrenciler');
     }
     else if(action==='quick-payment'){
       const sid = form.dataset.sid;
@@ -1452,6 +1740,13 @@ document.addEventListener('submit', async (e)=>{
       setMsgLastSeenNow();
       renderMessengerWidget();
     }
+    else if(action==='change-own-password'){
+      const p1=fd.get('password'), p2=fd.get('password2');
+      if(p1!==p2){ alert('Şifreler birbiriyle eşleşmiyor.'); return; }
+      await changeOwnPassword(p1);
+      modal=null; render();
+      alert('Şifren güncellendi.');
+    }
     else if(action==='add-instructor-admin'){
       await signUp(fd.get('email'), fd.get('password'), fd.get('adSoyad'));
       modal=null;
@@ -1499,7 +1794,7 @@ document.addEventListener('submit', async (e)=>{
 });
 
 checkRecoveryLink();
-render();
+if(recoverySession){ render(); } else { restoreSession().then(render).catch(render); }
 </script>
 </body>
 </html>
